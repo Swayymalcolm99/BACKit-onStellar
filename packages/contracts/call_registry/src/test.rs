@@ -17,7 +17,7 @@ impl MockToken {
 mod call_registry {
     use super::*;
     use crate::{CallRegistry, CallRegistryClient};
-    use crate::types::DataKey;
+    use crate::storage::DataKey;
 
     fn setup() -> (Env, CallRegistryClient<'static>, Address, Address) {
     let env = Env::default();
@@ -725,7 +725,9 @@ fn test_set_fee_above_max_panics() {
             &ipfs_cid,
         );
 
-        env.storage().instance().set(&DataKey::CallCounter, &4u64);
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&DataKey::CallCounter, &4u64);
+        });
 
         let last_call = client.create_call(
             &creator1,
