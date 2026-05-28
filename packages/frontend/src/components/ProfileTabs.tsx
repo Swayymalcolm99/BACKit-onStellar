@@ -72,7 +72,6 @@ export default function ProfileTabs({
 
   const CallCard = ({ call }: { call: Call }) => (
     <div
-      key={call.id}
       className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
     >
       <div className="flex items-start justify-between">
@@ -119,7 +118,6 @@ export default function ProfileTabs({
 
   const UserCard = ({ user }: { user: User }) => (
     <div
-      key={user.address}
       className="border border-gray-200 rounded-lg p-4 flex items-center space-x-4 hover:shadow-md transition-shadow"
     >
       <div className="flex-shrink-0">
@@ -183,9 +181,9 @@ export default function ProfileTabs({
       <div className="p-6">
         {activeTab === 'followers' && (
           <div className="space-y-4">
-            {followers.map((follower) => (
-              <UserCard user={follower} />
-            ))}
+{followers.map((follower) => (
+               <UserCard key={follower.address} user={follower} />
+             ))}
             {followers.length < followersTotal && (
               <button
                 onClick={handleLoadMoreFollowers}
@@ -198,9 +196,9 @@ export default function ProfileTabs({
         )}
         {activeTab === 'following' && (
           <div className="space-y-4">
-            {following.map((followed) => (
-              <UserCard user={followed} />
-            ))}
+{following.map((followed) => (
+               <UserCard key={followed.address} user={followed} />
+             ))}
             {following.length < followingTotal && (
               <button
                 onClick={handleLoadMoreFollowing}
@@ -213,23 +211,23 @@ export default function ProfileTabs({
         )}
         {activeTab === 'created' && createdCalls.length > 0 && (
           <div className="space-y-4">
-            {createdCalls.map((call) => (
-              <CallCard call={call} />
-            ))}
+{createdCalls.map((call) => (
+               <CallCard key={call.id} call={call} />
+             ))}
           </div>
         )}
         {activeTab === 'participated' && participatedCalls.length > 0 && (
           <div className="space-y-4">
-            {participatedCalls.map((call) => (
-              <CallCard call={call} />
-            ))}
+{participatedCalls.map((call) => (
+               <CallCard key={call.id} call={call} />
+             ))}
           </div>
         )}
         {activeTab === 'resolved' && resolvedCalls.length > 0 && (
           <div className="space-y-4">
-            {resolvedCalls.map((call) => (
-              <CallCard call={call} />
-            ))}
+{resolvedCalls.map((call) => (
+               <CallCard key={call.id} call={call} />
+             ))}
           </div>
         )}
       </div>
