@@ -1,108 +1,125 @@
-use soroban_sdk::{contracttype, Address, Env, String};
+use crate::types::{Call, ContractConfig};
+use soroban_sdk::{contracttype, Address, Env};
 
-// TTL Constants
-//
-// Stellar produces ~1 ledger every 5 seconds.
-//   Ledgers per day  = 86_400 / 5 = 17_280
-//   Ledgers per year = 17_280 * 365 = 6_307_200
-//
-// The old value of 31_536_000 was actually the number of *seconds* in a year,
-// not ledgers — a ~5× overcount.  Soroban caps persistent-entry TTL at
-// MAX_ENTRY_TTL (currently 3_110_400 ledgers ≈ 180 days on Mainnet/Testnet),
-// so we must stay at or below that ceiling.
+// ~120 days in ledgers (5s per ledger): 120 * 24 * 3600 / 5 = 2_073_600
+pub const PERSISTENT_LIFETIME_THRESHOLD: u32 = 1_036_800; // ~60 days
+pub const PERSISTENT_BUMP_AMOUNT: u32 = 2_073_600; // ~120 days
 
-/// Threshold below which we proactively bump a persistent entry's TTL.
-/// ~30 days worth of ledgers  (17_280 * 30)
-pub const PERSISTENT_LIFETIME_THRESHOLD: u32 = 518_400;
-
-/// How far into the future we extend a persistent entry's TTL when bumping.
-/// ~90 days worth of ledgers  (17_280 * 90)
-pub const PERSISTENT_BUMP_AMOUNT: u32 = 1_555_200;
-
-/// Instance-storage TTL bump — how long to keep the contract instance live.
-/// ~30 days  (same as threshold so the instance is always kept ≥ BUMP ahead)
-pub const INSTANCE_BUMP_AMOUNT: u32 = 518_400;
+// Instance TTL: ~7 days (instance storage is cheaper, refresh frequently)
+const INSTANCE_LIFETIME_THRESHOLD: u32 = 60_480; // ~3.5 days
+const INSTANCE_BUMP_AMOUNT: u32 = 120_960; // ~7 days
 
 #[contracttype]
-#[derive(Clone)]
 pub enum DataKey {
-    /// Individual call entry keyed by call_id
-    Call(String),
-    /// List of call IDs belonging to a staker
+    Config,
+    CallCounter,
+    Call(u64),
     StakerCalls(Address),
 }
 
-#[contracttype]
-#[derive(Clone)]
-pub struct CallRecord {
-    pub call_id: String,
-    pub creator: Address,
-    pub title: String,
-    pub description: String,
-    pub deadline: u64,
-    pub created_at: u64,
-    pub is_resolved: bool,
-    pub outcome: bool,
+/// Store contract configuration
+pub fn set_config(env: &Env, config: &ContractConfig) {
+    env.storage().instance().set(&DataKey::Config, config);
 }
 
-/// Extend the contract *instance* storage TTL.
-/// Uses the corrected ledger-based constant (not seconds).
-pub fn extend_instance_ttl(env: &Env) {
+/// Retrieve contract configuration
+pub fn get_config(env: &Env) -> Option<ContractConfig> {
+    env.storage().instance().get(&DataKey::Config)
+}
+
+/// Get the next call ID and increment counter
+pub fn next_call_id(env: &Env) -> u64 {
+    let counter: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::CallCounter)
+        .unwrap_or(0);
+
+    let next_id = counter + 1;
     env.storage()
         .instance()
-        .extend_ttl(PERSISTENT_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        .set(&DataKey::CallCounter, &next_id);
+
+    next_id
 }
 
-/// Write a call record and immediately extend its persistent TTL.
-pub fn set_call(env: &Env, call_id: &String, record: &CallRecord) {
-    let key = DataKey::Call(call_id.clone());
-    env.storage().persistent().set(&key, record);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+/// Store a call
+pub fn set_call(env: &Env, call: &Call) {
+    let key = DataKey::Call(call.id);
+    env.storage().persistent().set(&key, call);
+    env.storage().persistent().extend_ttl(
+        &key,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }
 
-/// Read a call record (returns None if not found / archived).
-pub fn get_call(env: &Env, call_id: &String) -> Option<CallRecord> {
-    let key = DataKey::Call(call_id.clone());
-    env.storage().persistent().get(&key)
-}
-
-/// Bump the TTL of an existing call entry without mutating it.
-/// Returns false if the entry doesn't exist.
-pub fn extend_call_ttl(env: &Env, call_id: &String) -> bool {
-    let key = DataKey::Call(call_id.clone());
-    if env.storage().persistent().has(&key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
-        true
-    } else {
-        false
+pub fn get_call(env: &Env, call_id: u64) -> Option<Call> {
+    let key = DataKey::Call(call_id);
+    let result: Option<Call> = env.storage().persistent().get(&key);
+    if result.is_some() {
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
     }
+    result
 }
 
-/// Read the list of call IDs for a staker, returning an empty vec if absent.
-pub fn get_staker_calls(env: &Env, staker: &Address) -> soroban_sdk::Vec<String> {
+pub fn call_exists(env: &Env, call_id: u64) -> bool {
+    env.storage().persistent().has(&DataKey::Call(call_id))
+}
+
+/// Track which calls a staker has participated in
+pub fn add_staker_call(env: &Env, staker: &Address, call_id: u64) {
     let key = DataKey::StakerCalls(staker.clone());
-    env.storage()
+
+    let mut call_ids: soroban_sdk::Vec<u64> = env
+        .storage()
         .persistent()
         .get(&key)
-        .unwrap_or_else(|| soroban_sdk::Vec::new(env))
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+
+    if !call_ids.iter().any(|id| id == call_id) {
+        call_ids.push_back(call_id);
+        env.storage().persistent().set(&key, &call_ids);
+    }
+    env.storage().persistent().extend_ttl(
+        &key,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }
 
-/// Overwrite the staker's call list and extend its TTL.
-pub fn set_staker_calls(env: &Env, staker: &Address, calls: &soroban_sdk::Vec<String>) {
+pub fn get_staker_calls(env: &Env, staker: &Address) -> soroban_sdk::Vec<u64> {
     let key = DataKey::StakerCalls(staker.clone());
-    env.storage().persistent().set(&key, calls);
-    env.storage()
+    let result = env
+        .storage()
         .persistent()
-        .extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    if !result.is_empty() {
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+    }
+    result
 }
 
-/// Append a call_id to a staker's list, bumping TTL in the same operation.
-pub fn add_call_to_staker(env: &Env, staker: &Address, call_id: &String) {
-    let mut calls = get_staker_calls(env, staker);
-    calls.push_back(call_id.clone());
-    set_staker_calls(env, staker, &calls);
+/// Get current call counter
+pub fn get_call_counter(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::CallCounter)
+        .unwrap_or(0)
+}
+
+/// Extend contract storage lifetime (for long-term persistence)
+pub fn extend_storage_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 }

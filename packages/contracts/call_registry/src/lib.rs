@@ -136,76 +136,22 @@ impl CallRegistry {
         call
     }
 
-    pub fn set_call(
-        env: Env,
-        call_id: String,
-        creator: Address,
-        title: String,
-        description: String,
-        deadline: u64,
-    ) {
-        creator.require_auth();
-        extend_instance_ttl(&env);
- 
-        let record = CallRecord {
-            call_id: call_id.clone(),
-            creator: creator.clone(),
-            title,
-            description,
-            deadline,
-            created_at: env.ledger().timestamp(),
-            is_resolved: false,
-            outcome: false,
-        };
- 
-        // Persist the call and bump its TTL in one shot.
-        set_call(&env, &call_id, &record);
- 
-        // Track in the creator's staker list (TTL bumped inside add_call_to_staker).
-        add_call_to_staker(&env, &creator, &call_id);
-    }
- 
-    /// Retrieve a call record.
-    pub fn get_call(env: Env, call_id: String) -> Option<CallRecord> {
-        extend_instance_ttl(&env);
-        get_call(&env, &call_id)
-    }
- 
-    /// Resolve a call (mark outcome).
-    pub fn resolve_call(env: Env, call_id: String, caller: Address, outcome: bool) {
-        caller.require_auth();
-        extend_instance_ttl(&env);
- 
-        let mut record = get_call(&env, &call_id).expect("Call not found");
-        assert!(!record.is_resolved, "Already resolved");
-        assert!(record.creator == caller, "Only creator can resolve");
- 
-        record.is_resolved = true;
-        record.outcome = outcome;
- 
-        // Re-persist with updated TTL.
-        set_call(&env, &call_id, &record);
-    }
+    /// Extend the TTL of a specific call's persistent storage entry.
+    /// Anyone may call this to prevent an active call from being archived.
+    pub fn extend_call_ttl(env: Env, call_id: u64) {
+        let key = storage::DataKey::Call(call_id);
+        if !env.storage().persistent().has(&key) {
+            panic!("Call does not exist");
+        }
+        env.storage().persistent().extend_ttl(
+            &key,
+            storage::PERSISTENT_LIFETIME_THRESHOLD,
+            storage::PERSISTENT_BUMP_AMOUNT,
+        );
 
-    /// Public function anyone can call to prevent a specific call from being
-    /// archived.  Useful for keepers / relayers that want to ensure live calls
-    /// stay accessible.
-    ///
-    /// Returns `true` if the entry exists and was bumped, `false` if not found.
-    pub fn extend_call_ttl(env: Env, call_id: String) -> bool {
-        extend_instance_ttl(&env);
-        storage_extend_call_ttl(&env, &call_id)
-    }
-
-    /// Return all call IDs created by a particular staker.
-    pub fn get_staker_calls(env: Env, staker: Address) -> soroban_sdk::Vec<String> {
-        extend_instance_ttl(&env);
-        get_staker_calls(&env, &staker)
-    }
- 
-    /// Extend instance storage TTL (legacy public entry kept for compatibility).
-    pub fn extend_storage_ttl(env: Env) {
-        extend_instance_ttl(&env);
+        // Also extend the staker index if it exists — callers bump both together
+        // Individual StakerCalls keys are address-specific so those are bumped
+        // on interaction (add_staker_call / get_staker_calls).
     }
 
     /// Add stake to an existing call
