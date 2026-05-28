@@ -23,8 +23,11 @@ jobs:
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32v1-none
           components: clippy, rustfmt
+
+      - name: Ensure wasm32v1-none target is available
+        run: rustup target add wasm32v1-none
 
       - name: Cache Cargo & Rust Build
         uses: actions/cache@v4
@@ -63,16 +66,23 @@ jobs:
           echo "### Compiled Soroban WASM Sizes" >> $GITHUB_STEP_SUMMARY
           echo "| Contract WASM | Size (KB) |" >> $GITHUB_STEP_SUMMARY
           echo "| --- | --- |" >> $GITHUB_STEP_SUMMARY
-          for f in packages/contracts/target/wasm32-unknown-unknown/release/*.wasm; do
-            sz=$(du -h "$f" | cut -f1)
-            name=$(basename "$f")
-            echo "| $name | $sz |" >> $GITHUB_STEP_SUMMARY
-            echo "WASM: $name Size: $sz"
+          for dir in packages/contracts/target/wasm32v1-none/release packages/contracts/target/wasm32-unknown-unknown/release; do
+            if [ -d "$dir" ]; then
+              for f in "$dir"/*.wasm; do
+                [ -e "$f" ] || continue
+                sz=$(du -h "$f" | cut -f1)
+                name=$(basename "$f")
+                echo "| $name | $sz |" >> $GITHUB_STEP_SUMMARY
+                echo "WASM: $name Size: $sz"
+              done
+            fi
           done
 
       - name: Upload WASM Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: soroban-contracts-wasm
-          path: packages/contracts/target/wasm32-unknown-unknown/release/*.wasm
+          path: |
+            packages/contracts/target/wasm32v1-none/release/*.wasm
+            packages/contracts/target/wasm32-unknown-unknown/release/*.wasm
           retention-days: 7
