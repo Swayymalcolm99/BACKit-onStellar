@@ -17,6 +17,7 @@ impl MockToken {
 mod call_registry {
     use super::*;
     use crate::{CallRegistry, CallRegistryClient};
+    use crate::types::DataKey;
 
     fn setup() -> (Env, CallRegistryClient<'static>, Address, Address) {
     let env = Env::default();
@@ -639,6 +640,194 @@ fn test_set_fee_above_max_panics() {
         );
 
         assert_eq!(client.get_call_count(), 2);
+    }
+
+    #[test]
+    fn test_get_calls_paginated_respects_limit_and_start_id() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = Address::generate(&env);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        client.create_call(
+            &creator,
+            &stake_token,
+            &100_000_000_i128,
+            &2000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+        client.create_call(
+            &creator,
+            &stake_token,
+            &100_000_000_i128,
+            &3000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+        client.create_call(
+            &creator,
+            &stake_token,
+            &100_000_000_i128,
+            &4000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+
+        let results = client.get_calls_paginated(&2u64, &2u32);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.get(0).unwrap().id, 2);
+        assert_eq!(results.get(1).unwrap().id, 3);
+    }
+
+    #[test]
+    fn test_get_calls_by_creator_paginated_handles_gaps_and_max_limit() {
+        let (env, admin, outcome_manager, creator1) = create_test_env();
+        let creator2 = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = Address::generate(&env);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        client.create_call(
+            &creator1,
+            &stake_token,
+            &100_000_000_i128,
+            &2000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+        client.create_call(
+            &creator2,
+            &stake_token,
+            &100_000_000_i128,
+            &3000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+
+        env.storage().instance().set(&DataKey::CallCounter, &4u64);
+
+        let last_call = client.create_call(
+            &creator1,
+            &stake_token,
+            &100_000_000_i128,
+            &4000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+
+        let results = client.get_calls_by_creator_paginated(&creator1, &1u64, &100u32);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.get(0).unwrap().id, 1);
+        assert_eq!(results.get(1).unwrap().id, last_call.id);
+        assert_eq!(results.get(1).unwrap().id, 5);
+        assert!(results.len() <= 20);
+    }
+
+    #[test]
+    fn test_get_calls_paginated_respects_maximum_limit() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = Address::generate(&env);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        for _ in 0..25 {
+            client.create_call(
+                &creator,
+                &stake_token,
+                &100_000_000_i128,
+                &2000u64,
+                &token_address,
+                &pair_id,
+                &ipfs_cid,
+            );
+        }
+
+        let results = client.get_calls_paginated(&1u64, &100u32);
+        assert_eq!(results.len(), 20);
+        assert_eq!(results.get(0).unwrap().id, 1);
+        assert_eq!(results.get(19).unwrap().id, 20);
+    }
+
+    #[test]
+    fn test_get_calls_by_creator_paginated_returns_creator_specific_results() {
+        let (env, admin, outcome_manager, creator1) = create_test_env();
+        let creator2 = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = Address::generate(&env);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        client.create_call(
+            &creator1,
+            &stake_token,
+            &100_000_000_i128,
+            &2000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+        client.create_call(
+            &creator2,
+            &stake_token,
+            &100_000_000_i128,
+            &3000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+        client.create_call(
+            &creator1,
+            &stake_token,
+            &100_000_000_i128,
+            &4000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+
+        let results = client.get_calls_by_creator_paginated(&creator1, &1u64, &10u32);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.get(0).unwrap().creator, creator1);
+        assert_eq!(results.get(1).unwrap().creator, creator1);
+        assert_eq!(results.get(0).unwrap().id, 1);
+        assert_eq!(results.get(1).unwrap().id, 3);
     }
 
     #[test]
