@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Bytes, Env, Vec};
+use soroban_sdk::{contract, contractimpl, token, Address, Bytes, Env, Vec};
 
 mod admin;
 mod errors;
@@ -31,21 +31,18 @@ fn evaluate_condition_impl(condition: &ConditionType, start_price: i128, end_pri
             if start_price <= 0 {
                 return false;
             }
-
             end_price * 100 >= start_price * (100 + *percent as i128)
         }
         ConditionType::PercentDown(percent) => {
             if start_price <= 0 {
                 return false;
             }
-
             end_price * 100 <= start_price * (100 - *percent as i128)
         }
         ConditionType::Range(min, max) => {
             if min > max {
                 return false;
             }
-
             end_price >= *min && end_price <= *max
         }
     }
@@ -53,7 +50,10 @@ fn evaluate_condition_impl(condition: &ConditionType, start_price: i128, end_pri
 
 #[contractimpl]
 impl CallRegistry {
-    
+
+    /// Initialise the contract with an admin and an outcome manager.
+    /// # Errors
+    /// * [`CallRegistryError::AlreadyInitialized`] – called more than once.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -80,8 +80,6 @@ impl CallRegistry {
         Ok(())
     }
 
-   
-
     /// Create a new prediction call.
     /// # Errors
     /// * [`CallRegistryError::InvalidStakeAmount`] – `stake_amount` ≤ 0.
@@ -95,9 +93,8 @@ impl CallRegistry {
         token_address: Address,
         pair_id: Bytes,
         ipfs_cid: Bytes,
-    ) -> Result<Call, CallRegistryError> {
         condition: ConditionType,
-    ) -> Call {
+    ) -> Result<Call, CallRegistryError> {
         creator.require_auth();
 
         if stake_amount <= 0 {
@@ -150,32 +147,30 @@ impl CallRegistry {
         Ok(call)
     }
 
-    /// Add stake to an existing call.
-    /// # Errors
-    /// * [`CallRegistryError::InvalidStakeAmount`] – `amount` ≤ 0.
-    /// * [`CallRegistryError::CallNotFound`]       – `call_id` does not exist.
-    /// * [`CallRegistryError::CallEnded`]           – call's `end_ts` has passed.
-    /// * [`CallRegistryError::CallSettled`]         – call is already settled.
-    /// * [`CallRegistryError::InvalidPosition`]     – `position` ∉ {1, 2}.
     /// Extend the TTL of a specific call's persistent storage entry.
     /// Anyone may call this to prevent an active call from being archived.
-    pub fn extend_call_ttl(env: Env, call_id: u64) {
+    /// # Errors
+    /// * [`CallRegistryError::CallNotFound`] – `call_id` does not exist.
+    pub fn extend_call_ttl(env: Env, call_id: u64) -> Result<(), CallRegistryError> {
         let key = storage::DataKey::Call(call_id);
         if !env.storage().persistent().has(&key) {
-            panic!("Call does not exist");
+            return Err(CallRegistryError::CallNotFound);
         }
         env.storage().persistent().extend_ttl(
             &key,
             storage::PERSISTENT_LIFETIME_THRESHOLD,
             storage::PERSISTENT_BUMP_AMOUNT,
         );
-
-        // Also extend the staker index if it exists — callers bump both together
-        // Individual StakerCalls keys are address-specific so those are bumped
-        // on interaction (add_staker_call / get_staker_calls).
+        Ok(())
     }
 
-    /// Add stake to an existing call
+    /// Add stake to an existing call.
+    /// # Errors
+    /// * [`CallRegistryError::InvalidStakeAmount`] – `amount` ≤ 0.
+    /// * [`CallRegistryError::CallNotFound`]        – `call_id` does not exist.
+    /// * [`CallRegistryError::CallEnded`]           – call's `end_ts` has passed.
+    /// * [`CallRegistryError::CallSettled`]         – call is already settled.
+    /// * [`CallRegistryError::InvalidPosition`]     – `position` ∉ {1, 2}.
     pub fn stake_on_call(
         env: Env,
         staker: Address,
@@ -328,16 +323,28 @@ impl CallRegistry {
         admin::set_fee(env, new_fee_bps)
     }
 
+    /// Get current contract configuration.
+    /// # Errors
+    /// * [`CallRegistryError::NotInitialized`] – contract not initialised.
     pub fn get_config(env: Env) -> Result<ContractConfig, CallRegistryError> {
         get_config(&env).ok_or(CallRegistryError::NotInitialized)
     }
+
+    /// Get call data by ID.
     /// # Errors
     /// * [`CallRegistryError::CallNotFound`] – `call_id` does not exist.
     pub fn get_call(env: Env, call_id: u64) -> Result<Call, CallRegistryError> {
         get_call(&env, call_id).ok_or(CallRegistryError::CallNotFound)
     }
 
-    /// Get all calls created by a specific address (unbounded scan — prefer paginated variant).
+    /// Get the condition type for a specific call.
+    /// # Errors
+    /// * [`CallRegistryError::CallNotFound`] – `call_id` does not exist.
+    pub fn get_condition(env: Env, call_id: u64) -> Result<ConditionType, CallRegistryError> {
+        let call = get_call(&env, call_id).ok_or(CallRegistryError::CallNotFound)?;
+        Ok(call.condition)
+    }
+
     /// Evaluate whether price movement satisfies the supplied condition.
     pub fn evaluate_condition(
         _env: Env,
@@ -348,17 +355,7 @@ impl CallRegistry {
         evaluate_condition_impl(&condition, start_price, end_price)
     }
 
-    /// Get condition type for a specific call.
-    pub fn get_condition(env: Env, call_id: u64) -> ConditionType {
-        let call = match get_call(&env, call_id) {
-            Some(c) => c,
-            None => panic!("Call does not exist"),
-        };
-
-        call.condition
-    }
-
-    /// Get all calls created by a specific address
+    /// Get all calls created by a specific address (unbounded scan — prefer paginated variant).
     pub fn get_calls_by_creator(env: Env, creator: Address) -> Vec<Call> {
         let mut calls = Vec::new(&env);
         let total_calls = get_call_counter(&env);
@@ -375,6 +372,7 @@ impl CallRegistry {
     }
 
     /// Get a paginated slice of calls starting at `start_id`.
+    /// Returns at most [`MAX_CALL_PAGE_SIZE`] calls.
     pub fn get_calls_paginated(env: Env, start_id: u64, limit: u32) -> Vec<Call> {
         let mut calls = Vec::new(&env);
         let total_calls = get_call_counter(&env);
@@ -399,6 +397,7 @@ impl CallRegistry {
     }
 
     /// Get a paginated slice of calls created by a specific address.
+    /// Returns at most [`MAX_CALL_PAGE_SIZE`] calls starting from `start_id`.
     pub fn get_calls_by_creator_paginated(
         env: Env,
         creator: Address,
@@ -459,8 +458,8 @@ impl CallRegistry {
     }
 
     /// Get the stake amount a staker has on a specific call position.
-    ///  # Errors
-    /// * [`CallRegistryError::CallNotFound`]   – `call_id` does not exist.
+    /// # Errors
+    /// * [`CallRegistryError::CallNotFound`]    – `call_id` does not exist.
     /// * [`CallRegistryError::InvalidPosition`] – `position` ∉ {1, 2}.
     pub fn get_staker_stake(
         env: Env,

@@ -3,7 +3,7 @@
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, Bytes, Env, IntoVal, String as SorobanString, Symbol, Vec,
+    Address, Bytes, Env, IntoVal, Symbol,
 };
 
 use crate::errors::CallRegistryError;
@@ -18,13 +18,15 @@ impl MockToken {
     pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) {}
 }
 
-// ── Test helpers ──────────────────────────────────────────────────────────────
+// ── Test module ───────────────────────────────────────────────────────────────
 
 mod call_registry {
     use super::*;
     use crate::storage::DataKey;
     use crate::types::ConditionType;
     use crate::{CallRegistry, CallRegistryClient};
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// Spin up a fresh environment with a registered, initialised CallRegistry.
     fn setup() -> (Env, CallRegistryClient<'static>, Address, Address) {
@@ -42,241 +44,17 @@ mod call_registry {
         (env, client, admin, outcome_manager)
     }
 
-    // ── set_admin ─────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_set_admin_updates_config() {
-        let (env, client, _admin, _om) = setup();
-        let new_admin = Address::generate(&env);
-
-        client.set_admin(&new_admin);
-
-        assert_eq!(client.get_config().admin, new_admin);
-    }
-
-    #[test]
-    fn test_extend_call_ttl_succeeds_for_existing_call() {
-        let (env, admin, outcome_manager, creator) = create_test_env();
-        let contract_id = env.register_contract(None, CallRegistry);
-        let client = CallRegistryClient::new(&env, &contract_id);
-
-        client.initialize(&admin, &outcome_manager);
-        env.ledger().set_timestamp(1000);
-
-        let stake_token = env.register_contract(None, MockToken);
-        let token_address = Address::generate(&env);
-        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
-        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
-
-        let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-
-        // Should not panic — TTL extension on an existing call
-        client.extend_call_ttl(&call.id);
-    }
-
-    #[test]
-    #[should_panic(expected = "Call does not exist")]
-    fn test_extend_call_ttl_panics_for_missing_call() {
-        let (env, admin, outcome_manager, _) = create_test_env();
-        let contract_id = env.register_contract(None, CallRegistry);
-        let client = CallRegistryClient::new(&env, &contract_id);
-
-        client.initialize(&admin, &outcome_manager);
-        client.extend_call_ttl(&999u64);
-    }
-
-    #[test]
-    fn test_set_call_uses_persistent_storage() {
-        let (env, admin, outcome_manager, creator) = create_test_env();
-        let contract_id = env.register_contract(None, CallRegistry);
-        let client = CallRegistryClient::new(&env, &contract_id);
-
-        client.initialize(&admin, &outcome_manager);
-        env.ledger().set_timestamp(1000);
-
-        let stake_token = env.register_contract(None, MockToken);
-        let token_address = Address::generate(&env);
-        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
-        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
-
-        let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-
-        // Verify the call is retrievable (persistent storage is being used)
-        let retrieved = client.get_call(&call.id);
-        assert_eq!(retrieved.id, call.id);
-    }
-
-    #[test]
-    fn test_staker_calls_ttl_extended_on_stake() {
-        let (env, admin, outcome_manager, creator) = create_test_env();
-        let staker = Address::generate(&env);
-        let contract_id = env.register_contract(None, CallRegistry);
-        let client = CallRegistryClient::new(&env, &contract_id);
-
-        client.initialize(&admin, &outcome_manager);
-        env.ledger().set_timestamp(1000);
-
-        let stake_token = env.register_contract(None, MockToken);
-        let token_address = Address::generate(&env);
-        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
-        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
-
-        let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-
-        env.budget().reset_unlimited();
-        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
-
-        // Staker's call list should be retrievable after staking
-        let staker_calls = client.get_staker_calls(&staker);
-        assert_eq!(staker_calls.len(), 1);
-        assert_eq!(staker_calls.get(0).unwrap().id, call.id);
-    }
-    #[test]
-    fn test_set_admin_emits_admin_params_changed() {
-        let (env, client, old_admin, _om) = setup();
-        let new_admin = Address::generate(&env);
-
-        client.set_admin(&new_admin);
-
-        let events = env.events().all();
-        let last = events.last().expect("no events");
-
-        // Topic: ("call_registry", "admin_params_changed")
-        assert_eq!(
-            last.1,
-            soroban_sdk::vec![
-                &env,
-                "call_registry".into_val(&env),
-                "admin_params_changed".into_val(&env),
-            ]
-        );
-
-        // First element of the payload tuple is the param discriminant
-        let (param, _changed_by, old_val, new_val): (Symbol, Address, Address, Address) =
-            last.2.into_val(&env);
-
-        assert_eq!(param, Symbol::new(&env, "admin"));
-        assert_eq!(old_val, old_admin);
-        assert_eq!(new_val, new_admin);
-    }
-
-    // ── set_outcome_manager ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_set_outcome_manager_updates_config() {
-        let (env, client, _admin, _om) = setup();
-        let new_om = Address::generate(&env);
-
-        client.set_outcome_manager(&new_om);
-
-        assert_eq!(client.get_config().outcome_manager, new_om);
-    }
-
-    #[test]
-    fn test_set_outcome_manager_emits_admin_params_changed() {
-        let (env, client, _admin, old_om) = setup();
-        let new_om = Address::generate(&env);
-
-        client.set_outcome_manager(&new_om);
-
-        let events = env.events().all();
-        let last = events.last().expect("no events");
-
-        let (param, _changed_by, old_val, new_val): (Symbol, Address, Address, Address) =
-            last.2.into_val(&env);
-
-        assert_eq!(param, Symbol::new(&env, "outcome_manager"));
-        assert_eq!(old_val, old_om);
-        assert_eq!(new_val, new_om);
-    }
-
-    // ── set_fee ───────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_set_fee_updates_config() {
-        let (_env, client, _admin, _om) = setup();
-
-        client.set_fee(&250_u32); // 2.5 %
-
-        assert_eq!(client.get_config().fee_bps, 250);
-    }
-
-    #[test]
-    fn test_set_fee_emits_admin_params_changed() {
-        let (env, client, _admin, _om) = setup();
-
-        client.set_fee(&100_u32);
-
-        let events = env.events().all();
-        let last = events.last().expect("no events");
-
-        let (param, _changed_by, old_val, new_val): (Symbol, Address, u32, u32) =
-            last.2.into_val(&env);
-
-        assert_eq!(param, Symbol::new(&env, "fee_bps"));
-        assert_eq!(old_val, 0_u32); // default set in initialize()
-        assert_eq!(new_val, 100_u32);
-    }
-
-    #[test]
-    fn test_set_fee_zero_is_valid() {
-        let (_env, client, _admin, _om) = setup();
-        client.set_fee(&0_u32);
-        assert_eq!(client.get_config().fee_bps, 0);
-    }
-
-    #[test]
-    fn test_set_fee_max_boundary_is_valid() {
-        let (_env, client, _admin, _om) = setup();
-        client.set_fee(&10_000_u32); // exactly 100 % — allowed
-        assert_eq!(client.get_config().fee_bps, 10_000);
-    }
-
-    #[test]
-    #[should_panic(expected = "fee_bps cannot exceed 10_000 (100%)")]
-    fn test_set_fee_above_max_panics() {
-        let (_env, client, _admin, _om) = setup();
-        client.set_fee(&10_001_u32);
-    }
-
     fn create_test_env() -> (Env, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
         let outcome_manager = Address::generate(&env);
         let creator = Address::generate(&env);
-
         (env, admin, outcome_manager, creator)
     }
 
-    // ── initialize ────────────────────────────────────────────────────────────
+    /// Convenience wrapper: creates a call with a `TargetAbove` condition so
+    /// every test that doesn't care about conditions doesn't have to repeat it.
     fn create_call_with_default_condition(
         client: &CallRegistryClient<'_>,
         creator: &Address,
@@ -298,6 +76,8 @@ mod call_registry {
             &ConditionType::TargetAbove(100_000_000_i128),
         )
     }
+
+    // ── initialize ────────────────────────────────────────────────────────────
 
     #[test]
     fn test_initialize() {
@@ -367,6 +147,19 @@ mod call_registry {
         assert_eq!(new_val, new_admin);
     }
 
+    #[test]
+    fn test_set_admin() {
+        let (env, admin, outcome_manager, _) = create_test_env();
+        let new_admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        client.set_admin(&new_admin);
+
+        assert_eq!(client.get_config().admin, new_admin);
+    }
+
     // ── set_outcome_manager ───────────────────────────────────────────────────
 
     #[test]
@@ -395,6 +188,19 @@ mod call_registry {
         assert_eq!(param, Symbol::new(&env, "outcome_manager"));
         assert_eq!(old_val, old_om);
         assert_eq!(new_val, new_om);
+    }
+
+    #[test]
+    fn test_set_outcome_manager() {
+        let (env, admin, outcome_manager, _) = create_test_env();
+        let new_manager = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        client.set_outcome_manager(&new_manager);
+
+        assert_eq!(client.get_config().outcome_manager, new_manager);
     }
 
     // ── set_fee ───────────────────────────────────────────────────────────────
@@ -447,6 +253,100 @@ mod call_registry {
         );
     }
 
+    // ── extend_call_ttl ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_extend_call_ttl_succeeds_for_existing_call() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = env.register_contract(None, MockToken);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        let call = create_call_with_default_condition(
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
+        );
+
+        // Should not error — TTL extension on an existing call
+        client.extend_call_ttl(&call.id);
+    }
+
+    #[test]
+    fn test_extend_call_ttl_missing_call_returns_error() {
+        let (env, admin, outcome_manager, _) = create_test_env();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+
+        let result = client.try_extend_call_ttl(&999u64);
+        assert_eq!(
+            result,
+            Err(Ok(CallRegistryError::CallNotFound)),
+            "missing call should return CallNotFound"
+        );
+    }
+
+    // ── persistent storage ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_set_call_uses_persistent_storage() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = env.register_contract(None, MockToken);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        let call = create_call_with_default_condition(
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
+        );
+
+        let retrieved = client.get_call(&call.id);
+        assert_eq!(retrieved.id, call.id);
+    }
+
+    #[test]
+    fn test_staker_calls_ttl_extended_on_stake() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let staker = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = env.register_contract(None, MockToken);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        let call = create_call_with_default_condition(
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
+        );
+
+        env.budget().reset_unlimited();
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+
+        let staker_calls = client.get_staker_calls(&staker);
+        assert_eq!(staker_calls.len(), 1);
+        assert_eq!(staker_calls.get(0).unwrap().id, call.id);
+    }
+
     // ── create_call ───────────────────────────────────────────────────────────
 
     #[test]
@@ -464,14 +364,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         assert_eq!(call.id, 1);
@@ -482,7 +376,6 @@ mod call_registry {
         assert_eq!(call.outcome, 0);
         assert!(!call.settled);
         assert_eq!(call.condition, ConditionType::TargetAbove(100_000_000_i128));
-        assert_eq!(call.settled, false);
         assert_eq!(call.created_at, 1000);
     }
 
@@ -501,8 +394,6 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let result = client.try_create_call(
-        create_call_with_default_condition(
-            &client,
             &creator,
             &stake_token,
             &-100_000_000_i128,
@@ -510,6 +401,7 @@ mod call_registry {
             &token_address,
             &pair_id,
             &ipfs_cid,
+            &ConditionType::TargetAbove(100_000_000_i128),
         );
 
         assert_eq!(
@@ -534,8 +426,6 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let result = client.try_create_call(
-        create_call_with_default_condition(
-            &client,
             &creator,
             &stake_token,
             &100_000_000_i128,
@@ -543,6 +433,7 @@ mod call_registry {
             &token_address,
             &pair_id,
             &ipfs_cid,
+            &ConditionType::TargetAbove(100_000_000_i128),
         );
 
         assert_eq!(
@@ -570,14 +461,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         env.budget().reset_unlimited();
@@ -604,14 +489,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         env.budget().reset_unlimited();
@@ -638,14 +517,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         env.ledger().set_timestamp(3000); // past end_ts
@@ -674,14 +547,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         let result = client.try_stake_on_call(&staker, &call.id, &50_000_000_i128, &3);
@@ -709,19 +576,13 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let created_call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
-        let retrieved = client.get_call(&created.id);
+        let retrieved = client.get_call(&created_call.id);
 
-        assert_eq!(retrieved.id, created.id);
+        assert_eq!(retrieved.id, created_call.id);
         assert_eq!(retrieved.creator, creator);
         assert_eq!(retrieved.stake_amount, 100_000_000);
     }
@@ -761,14 +622,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         env.budget().reset_unlimited();
@@ -801,14 +656,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         env.ledger().set_timestamp(3000); // after end_ts
@@ -834,14 +683,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         // still at ts=1000, before end_ts=2000
@@ -851,34 +694,6 @@ mod call_registry {
             Err(Ok(CallRegistryError::CallNotEnded)),
             "resolving before end_ts should return CallNotEnded"
         );
-    }
-
-    // ── set_admin / set_outcome_manager ───────────────────────────────────────
-
-    #[test]
-    fn test_set_admin() {
-        let (env, admin, outcome_manager, _) = create_test_env();
-        let new_admin = Address::generate(&env);
-        let contract_id = env.register_contract(None, CallRegistry);
-        let client = CallRegistryClient::new(&env, &contract_id);
-
-        client.initialize(&admin, &outcome_manager);
-        client.set_admin(&new_admin);
-
-        assert_eq!(client.get_config().admin, new_admin);
-    }
-
-    #[test]
-    fn test_set_outcome_manager() {
-        let (env, admin, outcome_manager, _) = create_test_env();
-        let new_manager = Address::generate(&env);
-        let contract_id = env.register_contract(None, CallRegistry);
-        let client = CallRegistryClient::new(&env, &contract_id);
-
-        client.initialize(&admin, &outcome_manager);
-        client.set_outcome_manager(&new_manager);
-
-        assert_eq!(client.get_config().outcome_manager, new_manager);
     }
 
     // ── get_call_count ────────────────────────────────────────────────────────
@@ -899,27 +714,13 @@ mod call_registry {
         let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
-        // Create multiple calls
         create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
-
         create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &3000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &3000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         assert_eq!(client.get_call_count(), 2);
@@ -941,36 +742,9 @@ mod call_registry {
         let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
-        create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-        create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &3000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-        create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &4000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
+        create_call_with_default_condition(&client, &creator, &stake_token, &100_000_000_i128, &2000u64, &token_address, &pair_id, &ipfs_cid);
+        create_call_with_default_condition(&client, &creator, &stake_token, &100_000_000_i128, &3000u64, &token_address, &pair_id, &ipfs_cid);
+        create_call_with_default_condition(&client, &creator, &stake_token, &100_000_000_i128, &4000u64, &token_address, &pair_id, &ipfs_cid);
 
         let results = client.get_calls_paginated(&2u64, &2u32);
 
@@ -993,43 +767,12 @@ mod call_registry {
         let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
-        create_call_with_default_condition(
-            &client,
-            &creator1,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-        create_call_with_default_condition(
-            &client,
-            &creator2,
-            &stake_token,
-            &100_000_000_i128,
-            &3000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-
-        env.as_contract(&contract_id, || {
-            env.storage().instance().set(&DataKey::CallCounter, &4u64);
-        });
-
-        let last_call = create_call_with_default_condition(
-            &client,
-            &creator1,
-            &stake_token,
-            &100_000_000_i128,
-            &4000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-
-        let results = client.get_calls_by_creator_paginated(&creator1, &1u64, &100u32);
+        for _ in 0..25 {
+            create_call_with_default_condition(
+                &client, &creator, &stake_token, &100_000_000_i128,
+                &2000u64, &token_address, &pair_id, &ipfs_cid,
+            );
+        }
 
         let results = client.get_calls_paginated(&1u64, &100u32);
         assert_eq!(results.len(), 20);
@@ -1052,18 +795,9 @@ mod call_registry {
         let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
-        for _ in 0..25 {
-            create_call_with_default_condition(
-                &client,
-                &creator,
-                &stake_token,
-                &100_000_000_i128,
-                &2000u64,
-                &token_address,
-                &pair_id,
-                &ipfs_cid,
-            );
-        }
+        create_call_with_default_condition(&client, &creator1, &stake_token, &100_000_000_i128, &2000u64, &token_address, &pair_id, &ipfs_cid);
+        create_call_with_default_condition(&client, &creator2, &stake_token, &100_000_000_i128, &3000u64, &token_address, &pair_id, &ipfs_cid);
+        create_call_with_default_condition(&client, &creator1, &stake_token, &100_000_000_i128, &4000u64, &token_address, &pair_id, &ipfs_cid);
 
         let results = client.get_calls_by_creator_paginated(&creator1, &1u64, &10u32);
 
@@ -1089,43 +823,18 @@ mod call_registry {
         let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
-        create_call_with_default_condition(
-            &client,
-            &creator1,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-        create_call_with_default_condition(
-            &client,
-            &creator2,
-            &stake_token,
-            &100_000_000_i128,
-            &3000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
-        create_call_with_default_condition(
-            &client,
-            &creator1,
-            &stake_token,
-            &100_000_000_i128,
-            &4000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-        );
+        create_call_with_default_condition(&client, &creator1, &stake_token, &100_000_000_i128, &2000u64, &token_address, &pair_id, &ipfs_cid);
+        create_call_with_default_condition(&client, &creator2, &stake_token, &100_000_000_i128, &3000u64, &token_address, &pair_id, &ipfs_cid);
 
-        // Artificially bump the counter to create a gap (IDs 3 is skipped).
+        // Artificially bump the counter to create a gap (ID 3 is skipped).
         env.as_contract(&contract_id, || {
             env.storage().instance().set(&DataKey::CallCounter, &4u64);
         });
 
-        let last_call = client.create_call(&creator1, &stake_token, &100_000_000_i128, &4000u64, &token_address, &pair_id, &ipfs_cid);
+        let last_call = create_call_with_default_condition(
+            &client, &creator1, &stake_token, &100_000_000_i128,
+            &4000u64, &token_address, &pair_id, &ipfs_cid,
+        );
 
         let results = client.get_calls_by_creator_paginated(&creator1, &1u64, &100u32);
 
@@ -1154,14 +863,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         env.budget().reset_unlimited();
@@ -1187,14 +890,9 @@ mod call_registry {
         let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
-        let call = client.create_call(
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+        let call = create_call_with_default_condition(
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         let result = client.try_get_staker_stake(&call.id, &staker, &99);
@@ -1225,14 +923,8 @@ mod call_registry {
         let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
 
         let call = create_call_with_default_condition(
-            &client,
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &5000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &5000u64, &token_address, &pair_id, &ipfs_cid,
         );
 
         env.budget().reset_unlimited();
@@ -1246,6 +938,39 @@ mod call_registry {
         assert_eq!(call_updated.total_up_stake, 80_000_000);
         assert_eq!(call_updated.total_down_stake, 40_000_000);
     }
+
+    // ── mark_settled ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_mark_settled_twice_returns_error() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = env.register_contract(None, MockToken);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        let call = create_call_with_default_condition(
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
+        );
+
+        client.mark_settled(&call.id);
+
+        let result = client.try_mark_settled(&call.id);
+        assert_eq!(
+            result,
+            Err(Ok(CallRegistryError::CallSettled)),
+            "second mark_settled should return CallSettled"
+        );
+    }
+
+    // ── condition ─────────────────────────────────────────────────────────────
 
     #[test]
     fn test_get_condition_returns_stored_condition() {
@@ -1263,14 +988,8 @@ mod call_registry {
         let condition = ConditionType::Range(90_000_000_i128, 110_000_000_i128);
 
         let call = client.create_call(
-            &creator,
-            &stake_token,
-            &100_000_000_i128,
-            &2000u64,
-            &token_address,
-            &pair_id,
-            &ipfs_cid,
-            &condition,
+            &creator, &stake_token, &100_000_000_i128, &2000u64,
+            &token_address, &pair_id, &ipfs_cid, &condition,
         );
 
         let stored = client.get_condition(&call.id);
@@ -1279,117 +998,51 @@ mod call_registry {
 
     #[test]
     fn test_evaluate_condition_target_above() {
-        let (env, client, _admin, _om) = setup();
+        let (_env, client, _admin, _om) = setup();
 
-        assert!(client.evaluate_condition(
-            &ConditionType::TargetAbove(100_i128),
-            &100_i128,
-            &101_i128,
-        ));
-        assert!(!client.evaluate_condition(
-            &ConditionType::TargetAbove(100_i128),
-            &100_i128,
-            &100_i128,
-        ));
-        assert!(!client.evaluate_condition(
-            &ConditionType::TargetAbove(100_i128),
-            &100_i128,
-            &99_i128,
-        ));
-
-        let _ = env;
+        assert!(client.evaluate_condition(&ConditionType::TargetAbove(100_i128), &100_i128, &101_i128));
+        assert!(!client.evaluate_condition(&ConditionType::TargetAbove(100_i128), &100_i128, &100_i128));
+        assert!(!client.evaluate_condition(&ConditionType::TargetAbove(100_i128), &100_i128, &99_i128));
     }
 
     #[test]
     fn test_evaluate_condition_target_below() {
         let (_env, client, _admin, _om) = setup();
 
-        assert!(client.evaluate_condition(
-            &ConditionType::TargetBelow(100_i128),
-            &100_i128,
-            &99_i128,
-        ));
-        assert!(!client.evaluate_condition(
-            &ConditionType::TargetBelow(100_i128),
-            &100_i128,
-            &100_i128,
-        ));
-        assert!(!client.evaluate_condition(
-            &ConditionType::TargetBelow(100_i128),
-            &100_i128,
-            &101_i128,
-        ));
+        assert!(client.evaluate_condition(&ConditionType::TargetBelow(100_i128), &100_i128, &99_i128));
+        assert!(!client.evaluate_condition(&ConditionType::TargetBelow(100_i128), &100_i128, &100_i128));
+        assert!(!client.evaluate_condition(&ConditionType::TargetBelow(100_i128), &100_i128, &101_i128));
     }
 
     #[test]
     fn test_evaluate_condition_percent_up() {
         let (_env, client, _admin, _om) = setup();
 
-        assert!(client.evaluate_condition(&ConditionType::PercentUp(10_u32), &100_i128, &110_i128,));
-        assert!(client.evaluate_condition(&ConditionType::PercentUp(10_u32), &100_i128, &111_i128,));
-        assert!(!client.evaluate_condition(
-            &ConditionType::PercentUp(10_u32),
-            &100_i128,
-            &109_i128,
-        ));
-        assert!(!client.evaluate_condition(&ConditionType::PercentUp(10_u32), &0_i128, &120_i128,));
+        assert!(client.evaluate_condition(&ConditionType::PercentUp(10_u32), &100_i128, &110_i128));
+        assert!(client.evaluate_condition(&ConditionType::PercentUp(10_u32), &100_i128, &111_i128));
+        assert!(!client.evaluate_condition(&ConditionType::PercentUp(10_u32), &100_i128, &109_i128));
+        assert!(!client.evaluate_condition(&ConditionType::PercentUp(10_u32), &0_i128, &120_i128));
     }
 
     #[test]
     fn test_evaluate_condition_percent_down() {
         let (_env, client, _admin, _om) = setup();
 
-        assert!(client.evaluate_condition(
-            &ConditionType::PercentDown(10_u32),
-            &100_i128,
-            &90_i128,
-        ));
-        assert!(client.evaluate_condition(
-            &ConditionType::PercentDown(10_u32),
-            &100_i128,
-            &89_i128,
-        ));
-        assert!(!client.evaluate_condition(
-            &ConditionType::PercentDown(10_u32),
-            &100_i128,
-            &91_i128,
-        ));
-        assert!(!client.evaluate_condition(&ConditionType::PercentDown(10_u32), &0_i128, &80_i128,));
+        assert!(client.evaluate_condition(&ConditionType::PercentDown(10_u32), &100_i128, &90_i128));
+        assert!(client.evaluate_condition(&ConditionType::PercentDown(10_u32), &100_i128, &89_i128));
+        assert!(!client.evaluate_condition(&ConditionType::PercentDown(10_u32), &100_i128, &91_i128));
+        assert!(!client.evaluate_condition(&ConditionType::PercentDown(10_u32), &0_i128, &80_i128));
     }
 
     #[test]
     fn test_evaluate_condition_range() {
         let (_env, client, _admin, _om) = setup();
 
-        assert!(client.evaluate_condition(
-            &ConditionType::Range(90_i128, 110_i128),
-            &100_i128,
-            &90_i128,
-        ));
-        assert!(client.evaluate_condition(
-            &ConditionType::Range(90_i128, 110_i128),
-            &100_i128,
-            &100_i128,
-        ));
-        assert!(client.evaluate_condition(
-            &ConditionType::Range(90_i128, 110_i128),
-            &100_i128,
-            &110_i128,
-        ));
-        assert!(!client.evaluate_condition(
-            &ConditionType::Range(90_i128, 110_i128),
-            &100_i128,
-            &89_i128,
-        ));
-        assert!(!client.evaluate_condition(
-            &ConditionType::Range(90_i128, 110_i128),
-            &100_i128,
-            &111_i128,
-        ));
-        assert!(!client.evaluate_condition(
-            &ConditionType::Range(110_i128, 90_i128),
-            &100_i128,
-            &100_i128,
-        ));
+        assert!(client.evaluate_condition(&ConditionType::Range(90_i128, 110_i128), &100_i128, &90_i128));
+        assert!(client.evaluate_condition(&ConditionType::Range(90_i128, 110_i128), &100_i128, &100_i128));
+        assert!(client.evaluate_condition(&ConditionType::Range(90_i128, 110_i128), &100_i128, &110_i128));
+        assert!(!client.evaluate_condition(&ConditionType::Range(90_i128, 110_i128), &100_i128, &89_i128));
+        assert!(!client.evaluate_condition(&ConditionType::Range(90_i128, 110_i128), &100_i128, &111_i128));
+        assert!(!client.evaluate_condition(&ConditionType::Range(110_i128, 90_i128), &100_i128, &100_i128));
     }
 }
