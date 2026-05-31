@@ -19,6 +19,7 @@ use types::*;
 
 const MAX_CALL_PAGE_SIZE: u32 = 20;
 pub const CONTRACT_VERSION: u32 = 1;
+pub const DEFAULT_RESOLUTION_GRACE_PERIOD: u64 = 604800; // 7 days in seconds
 
 /// CallRegistry contract implementation.
 /// Manages prediction calls and staking on market outcomes.
@@ -76,6 +77,7 @@ impl CallRegistry {
             min_stake,
             metadata_version: 0,
             paused: false,
+            resolution_grace_period: DEFAULT_RESOLUTION_GRACE_PERIOD,
         };
 
         set_config(&env, &config);
@@ -417,6 +419,81 @@ impl CallRegistry {
         token_client.transfer(&env.current_contract_address(), &to, &amount);
 
         Ok(())
+    }
+
+    /// Claim an expired refund when oracle fails to resolve within grace period.
+    /// 
+    /// This function allows stakers to reclaim their exact stake if:
+    /// - The call's grace period has expired (current_timestamp > end_ts + resolution_grace_period)
+    /// - The call has not been settled
+    /// - The staker has not already claimed the refund
+    /// - The staker has an actual stake in the specified position
+    /// 
+    /// # Arguments
+    /// * `staker` - The staker's address claiming the refund
+    /// * `call_id` - The ID of the expired call
+    /// * `position` - The stake position (1 for UP, 2 for DOWN)
+    /// 
+    /// # Errors
+    /// * [`CallRegistryError::NotInitialized`] – contract not initialised.
+    /// * [`CallRegistryError::CallNotFound`] – `call_id` does not exist.
+    /// * [`CallRegistryError::CallSettled`] – call is already settled.
+    /// * [`CallRegistryError::InvalidPosition`] – `position` is not 1 or 2.
+    /// * [`CallRegistryError::GracePeriodNotExpired`] – grace period has not yet elapsed.
+    /// * [`CallRegistryError::RefundAlreadyClaimed`] – staker already claimed refund.
+    /// * [`CallRegistryError::NoStakeFound`] – staker has no stake in this position.
+    pub fn claim_expired_refund(
+        env: Env,
+        staker: Address,
+        call_id: u64,
+        position: u32,
+    ) -> Result<i128, CallRegistryError> {
+        staker.require_auth();
+
+        let config = get_config(&env).ok_or(CallRegistryError::NotInitialized)?;
+        
+        // Validate position
+        StakePosition::from_u32(position).ok_or(CallRegistryError::InvalidPosition)?;
+
+        let call = get_call(&env, call_id).ok_or(CallRegistryError::CallNotFound)?;
+
+        // Check call is not settled
+        if call.settled {
+            return Err(CallRegistryError::CallSettled);
+        }
+
+        // Check grace period has expired
+        let current_timestamp = env.ledger().timestamp();
+        let grace_period_deadline = call.end_ts.saturating_add(config.resolution_grace_period);
+        
+        if current_timestamp <= grace_period_deadline {
+            return Err(CallRegistryError::GracePeriodNotExpired);
+        }
+
+        // Check if already refunded
+        if has_refund_claimed(&env, call_id, &staker) {
+            return Err(CallRegistryError::RefundAlreadyClaimed);
+        }
+
+        // Get user stake for this position
+        let stake_amount = get_user_stake(&env, call_id, &staker, position);
+        if stake_amount <= 0 {
+            return Err(CallRegistryError::NoStakeFound);
+        }
+
+        // Mark as refunded BEFORE transferring tokens (reentrancy guard)
+        mark_refund_claimed(&env, call_id, &staker);
+
+        // Transfer exact stake back to staker (no penalty, no profit)
+        let token_client = token::Client::new(&env, &call.stake_token);
+        token_client.transfer(&env.current_contract_address(), &staker, &stake_amount);
+
+        // Emit event
+        emit_expired_refund_claimed(&env, call_id, &staker, stake_amount, position);
+
+        extend_storage_ttl(&env);
+
+        Ok(stake_amount)
     }
 
     /// Transfer admin privileges to a new address (admin only).

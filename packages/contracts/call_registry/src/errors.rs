@@ -30,4 +30,10 @@ pub enum CallRegistryError {
     InvalidOutcome = 12,
     /// `fee_bps` exceeds 10 000 (100 %).
     FeeTooHigh = 13,
+    /// Grace period for claim_expired_refund has not yet elapsed.
+    GracePeriodNotExpired = 14,
+    /// Staker has already claimed the expired refund for this call.
+    RefundAlreadyClaimed = 15,
+    /// Staker has no stake on this call in the specified position.
+    NoStakeFound = 16,
 }

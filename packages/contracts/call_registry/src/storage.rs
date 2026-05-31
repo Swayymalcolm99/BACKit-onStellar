@@ -20,6 +20,9 @@ pub enum DataKey {
     UserStake(u64, Address, u32),
     UpStakerCount(u64),
     DownStakerCount(u64),
+    /// Track which stakers have received expired refunds for a call
+    /// Key: (call_id, staker_address) -> bool
+    ExpiredRefundClaimed(u64, Address),
 }
 
 /// Store contract configuration
@@ -219,4 +222,24 @@ pub fn extend_storage_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+/// Check if a staker has already received an expired refund for a call
+pub fn has_refund_claimed(env: &Env, call_id: u64, staker: &Address) -> bool {
+    let key = DataKey::ExpiredRefundClaimed(call_id, staker.clone());
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(false)
+}
+
+/// Mark that a staker has received an expired refund for a call
+pub fn mark_refund_claimed(env: &Env, call_id: u64, staker: &Address) {
+    let key = DataKey::ExpiredRefundClaimed(call_id, staker.clone());
+    env.storage().persistent().set(&key, &true);
+    env.storage().persistent().extend_ttl(
+        &key,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }

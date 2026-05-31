@@ -178,3 +178,17 @@ pub fn emit_contract_upgraded(env: &Env, old_version: u32, new_version: u32, adm
         (old_version, new_version, admin.clone()),
     );
 }
+
+/// Emitted when a staker claims an expired refund after grace period
+pub fn emit_expired_refund_claimed(
+    env: &Env,
+    call_id: u64,
+    staker: &Address,
+    amount: i128,
+    position: u32,
+) {
+    env.events().publish(
+        ("call_registry", "expired_refund_claimed"),
+        (call_id, staker.clone(), amount, position),
+    );
+}

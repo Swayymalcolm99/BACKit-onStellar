@@ -1583,4 +1583,153 @@ mod call_registry {
         let result = client.try_upgrade(&fake_hash);
         assert!(result.is_err(), "upgrade must fail when not initialized");
     }
+
+    // ── claim_expired_refund tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_claim_expired_refund_before_grace_period_fails() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let staker = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = env.register_contract(None, MockToken);
+        client.whitelist_token(&stake_token);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        let call = create_call_with_default_condition(
+            &client,
+            &creator,
+            &stake_token,
+            &100_000_000_i128,
+            &2000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+
+        env.budget().reset_unlimited();
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+
+        // Try to claim refund before grace period
+        env.ledger().set_timestamp(2000 + 604799); // 1 second before grace period ends
+        let result = client.try_claim_expired_refund(&staker, &call.id, &1);
+        assert_eq!(result, Err(Ok(CallRegistryError::GracePeriodNotExpired)));
+    }
+
+    #[test]
+    fn test_claim_expired_refund_after_grace_period_works() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let staker = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = env.register_contract(None, MockToken);
+        client.whitelist_token(&stake_token);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        let call = create_call_with_default_condition(
+            &client,
+            &creator,
+            &stake_token,
+            &100_000_000_i128,
+            &2000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+
+        env.budget().reset_unlimited();
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+
+        // Move time past grace period
+        env.ledger().set_timestamp(2000 + 604801);
+        let result = client.claim_expired_refund(&staker, &call.id, &1);
+        assert_eq!(result, 50_000_000);
+    }
+
+    #[test]
+    fn test_claim_expired_refund_on_settled_call_fails() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let staker = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = env.register_contract(None, MockToken);
+        client.whitelist_token(&stake_token);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        let call = create_call_with_default_condition(
+            &client,
+            &creator,
+            &stake_token,
+            &100_000_000_i128,
+            &2000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+
+        env.budget().reset_unlimited();
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+
+        // Settle the call
+        client.mark_settled(&call.id);
+        env.ledger().set_timestamp(2000 + 604801);
+        let result = client.try_claim_expired_refund(&staker, &call.id, &1);
+        assert_eq!(result, Err(Ok(CallRegistryError::CallSettled)));
+    }
+
+    #[test]
+    fn test_claim_expired_refund_double_claim_fails() {
+        let (env, admin, outcome_manager, creator) = create_test_env();
+        let staker = Address::generate(&env);
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
+        env.ledger().set_timestamp(1000);
+
+        let stake_token = env.register_contract(None, MockToken);
+        client.whitelist_token(&stake_token);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        let call = create_call_with_default_condition(
+            &client,
+            &creator,
+            &stake_token,
+            &100_000_000_i128,
+            &2000u64,
+            &token_address,
+            &pair_id,
+            &ipfs_cid,
+        );
+
+        env.budget().reset_unlimited();
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+
+        // Move time past grace period
+        env.ledger().set_timestamp(2000 + 604801);
+        let _ = client.claim_expired_refund(&staker, &call.id, &1);
+        // Try to claim again
+        let result = client.try_claim_expired_refund(&staker, &call.id, &1);
+        assert_eq!(result, Err(Ok(CallRegistryError::RefundAlreadyClaimed)));
+    }
 }

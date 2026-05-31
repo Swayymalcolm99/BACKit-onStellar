@@ -97,6 +97,10 @@ pub struct ContractConfig {
     pub metadata_version: u32,
     /// When true, create/stake/resolve operations are blocked.
     pub paused: bool,
+    /// Grace period (in seconds) after call expiry during which oracle can resolve.
+    /// If oracle fails to resolve within this period, stakers can reclaim stakes.
+    /// Default: 604800 (7 days).
+    pub resolution_grace_period: u64,
 }
 
 /// Contract-wide aggregated statistics for dashboards.
