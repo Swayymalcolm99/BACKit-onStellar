@@ -1,4 +1,4 @@
-use crate::types::{Call, ContractConfig, GlobalStats};
+use crate::types::{Call, ContractConfig, GlobalStats, CreatorStats};
 use soroban_sdk::{contracttype, Address, Env};
 
 // ~120 days in ledgers (5s per ledger): 120 * 24 * 3600 / 5 = 2_073_600
@@ -17,12 +17,14 @@ pub enum DataKey {
     GlobalStakerSeen(Address),
     Call(u64),
     StakerCalls(Address),
+    CreatorStats(Address),
     UserStake(u64, Address, u32),
     UpStakerCount(u64),
     DownStakerCount(u64),
     /// Track which stakers have received expired refunds for a call
     /// Key: (call_id, staker_address) -> bool
     ExpiredRefundClaimed(u64, Address),
+    VoidRefundClaimed(u64, Address),
 }
 
 /// Store contract configuration
@@ -237,9 +239,40 @@ pub fn has_refund_claimed(env: &Env, call_id: u64, staker: &Address) -> bool {
 pub fn mark_refund_claimed(env: &Env, call_id: u64, staker: &Address) {
     let key = DataKey::ExpiredRefundClaimed(call_id, staker.clone());
     env.storage().persistent().set(&key, &true);
+/// Get creator reputation stats, initializing if not found
+pub fn get_creator_stats(env: &Env, creator: &Address) -> CreatorStats {
+    let key = DataKey::CreatorStats(creator.clone());
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(CreatorStats {
+            total_created: 0,
+            total_resolved: 0,
+            total_correct: 0,
+        })
+}
+
+/// Store creator reputation stats in persistent storage
+pub fn set_creator_stats(env: &Env, creator: &Address, stats: &CreatorStats) {
+    let key = DataKey::CreatorStats(creator.clone());
+    env.storage().persistent().set(&key, stats);
     env.storage().persistent().extend_ttl(
         &key,
         PERSISTENT_LIFETIME_THRESHOLD,
         PERSISTENT_BUMP_AMOUNT,
     );
+}
+
+/// Mark that a staker has claimed their void refund for a call
+pub fn set_void_refund_claimed(env: &Env, call_id: u64, staker: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::VoidRefundClaimed(call_id, staker.clone()), &true);
+}
+
+/// Check whether a staker has already claimed their void refund
+pub fn is_void_refund_claimed(env: &Env, call_id: u64, staker: &Address) -> bool {
+    env.storage()
+        .instance()
+        .has(&DataKey::VoidRefundClaimed(call_id, staker.clone()))
 }

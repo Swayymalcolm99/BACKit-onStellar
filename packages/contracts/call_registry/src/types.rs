@@ -45,6 +45,8 @@ pub struct Call {
     pub condition: ConditionType,
     /// Whether the call has been settled
     pub settled: bool,
+    /// Whether the call has been voided by admin (triggers full refunds)
+    pub voided: bool,
     /// Creation timestamp
     pub created_at: u64,
     /// Whether the call has been cancelled by its creator
@@ -121,4 +123,13 @@ pub struct CallStats {
     pub total_stakes: u32,
     pub up_stake_count: u32,
     pub down_stake_count: u32,
+}
+
+/// Creator reputation statistics tracked on-chain
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatorStats {
+    pub total_created: u32,
+    pub total_resolved: u32,
+    pub total_correct: u32,
 }
